@@ -1,5 +1,5 @@
 # FHR extraction from Transabdominal PPG
-
+## Implementation
 The recording has 10 channels: five detectors measured at two wavelengths. The
 ch1 channels (one per wavelength) sit closest to the mother and act as maternal
 references. The remaining eight channels (detectors D2 through D5 at both
