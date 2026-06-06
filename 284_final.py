@@ -14,7 +14,6 @@ WINDOW_SAMPLES = int(WIN_SEC * FS)
 STEP_SAMPLES = int(STEP_SEC * FS)
 
 # detectors D2-D5, D3 sits closest to fetus, most weight
-# both wavelengths use same weights, 8 signals total
 SPATIAL_WEIGHTS = np.tile([1.0, 3.0, 2.0, 2.0], 2)   # WL1 D2-D5, then WL2 D2-D5
 METHOD_WEIGHTS = {'ANC': 1.0, 'EMD': 1.5, 'VMD': 2.0}
 TRAIN_WEIGHTS = {'PPG1': 0.7, 'PPG2': 0.3}
@@ -136,42 +135,6 @@ def vmd_bpm(det_win):
     return best_band_peak(modes)
 
 
-class KalmanTracker:
-    # constant velocity model on [bpm, bpm rate]
-    def __init__(self, dt=STEP_SEC, q=5.0, r=10.0):
-        self.F = np.array([[1, dt], [0, 1]], float)
-        self.H = np.array([[1, 0]], float)
-        self.Q = np.eye(2) * q
-        self.R = np.array([[r]])
-        self.x = None
-        self.P = np.eye(2) * 500.0
-
-    def update(self, bpm):
-        if self.x is None:
-            self.x = np.array([bpm, 0.0])
-            return bpm
-        self.x = self.F @ self.x
-        self.P = self.F @ self.P @ self.F.T + self.Q
-        y = np.array([[bpm]]) - self.H @ self.x.reshape(-1, 1)
-        S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
-        self.x = self.x + (K @ y).flatten()
-        self.P = (np.eye(2) - K @ self.H) @ self.P
-        return float(self.x[0])
-
-    def predict(self):
-        if self.x is None:
-            return np.nan
-        self.x = self.F @ self.x
-        self.P = self.F @ self.P @ self.F.T + self.Q
-        return float(self.x[0])
-
-
-def kalman_track(series):
-    kf = KalmanTracker()
-    return np.array([kf.update(v) if not np.isnan(v) else kf.predict() for v in series])
-
-
 def load(name):
     ppg = pd.read_csv(f'{name}.csv')
     ref = pd.read_csv(f'FHR{name[-1]}.csv', header=None).values.flatten()
@@ -245,15 +208,14 @@ def main():
         print('  ' + n)
         proc[n] = process(data[n])
 
-    # Kalman smooth fused track, sweep EMA factor on training sets
+    # smooth fused track with EMA, sweep the factor on training sets
     print('damping sweep...')
-    kal_train = {n: kalman_track(proc[n]['fused_all']) for n in TRAIN_NAMES}
     sweep = {}
     for a in DAMPING_VALUES:
         score = total = 0.0
         for name in TRAIN_NAMES:
             gt = proc[name]['gt']
-            d = ema(kal_train[name], a)
+            d = ema(proc[name]['fused_all'], a)
             m = ~np.isnan(d) & ~np.isnan(gt)
             if not m.sum():
                 continue
@@ -264,11 +226,10 @@ def main():
     best_alpha = min(sweep, key=sweep.get)
     print(f'  best alpha = {best_alpha}')
 
-    # apply alpha 
+    # apply alpha
     final = {}
     for name in ALL_NAMES:
-        kal = kalman_track(proc[name]['fused_all'])
-        final[name] = {'kalman': kal, 'damped': ema(kal, best_alpha)}
+        final[name] = {'damped': ema(proc[name]['fused_all'], best_alpha)}
 
     
     demo = 'PPG3'
@@ -308,14 +269,13 @@ def main():
     ax.legend(fontsize=8, ncol=2); ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    # Stage 3: temporal smoothing and kalman, EMA
+    # Stage 3: temporal smoothing (EMA)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.5),
                                    gridspec_kw={'width_ratios': [2, 1]})
     add_truth(ax1)
     ax1.plot(t, p['fused_all'], color='0.8', lw=1, label='fused (pre-smoothing)')
-    ax1.plot(t, f['kalman'], 'm-', lw=1.2, label='+ Kalman')
     mae, _ = metrics(f['damped'], p['gt'])
-    ax1.plot(t, f['damped'], 'b-', lw=2, label=f'+ EMA a={best_alpha} (MAE={mae:.1f})')
+    ax1.plot(t, f['damped'], 'b-', lw=2, label=f'EMA a={best_alpha} (MAE={mae:.1f})')
     ax1.set_title(f'Stage 3 - temporal smoothing [{demo}]')
     ax1.set_xlabel('time (min)'); ax1.set_ylabel('FHR (bpm)')
     ax1.legend(fontsize=8); ax1.grid(True, alpha=0.3)
@@ -343,8 +303,7 @@ def main():
     # bottom panel: MAE on test set (PPG3)
     stage_series = [('Stage 1\n(D3 ANC)', p['anc_d3']),
                     ('Stage 2\n(fused all)', p['fused_all']),
-                    ('Stage 3\n(Kalman)', f['kalman']),
-                    ('Stage 4\n(+EMA)', f['damped'])]
+                    ('Stage 3\n(+EMA)', f['damped'])]
     stage_maes = [metrics(s, p['gt'])[0] for _, s in stage_series]
     axes[-1].bar([lbl for lbl, _ in stage_series], stage_maes, color='tab:blue')
     for i, v in enumerate(stage_maes):
@@ -356,7 +315,7 @@ def main():
     fig.suptitle(f'Stage 4 - final FHR estimate (alpha={best_alpha})')
     fig.tight_layout()
 
-    # print metrics to console
+    # print metrics
     print('\nfinal metrics (MAE / RMSE in bpm):')
     for name in ALL_NAMES:
         p = proc[name]
@@ -365,8 +324,7 @@ def main():
                            ('EMD fused (8ch)', p['fused_emd']),
                            ('VMD fused (8ch)', p['fused_vmd']),
                            ('All methods fused', p['fused_all']),
-                           ('Kalman (no EMA)', final[name]['kalman']),
-                           (f'Kalman + EMA alpha={best_alpha}', final[name]['damped'])):
+                           (f'EMA alpha={best_alpha}', final[name]['damped'])):
             mae, rmse = metrics(est, p['gt'])
             print(f'  {name:<5} {split:<5} {label:<28} {mae:6.2f}  {rmse:6.2f}')
 
