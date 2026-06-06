@@ -1,11 +1,5 @@
 # FHR extraction from Transabdominal PPG
 ## Implementation
-The recording has 10 channels: five detectors measured at two wavelengths. The
-ch1 channels (one per wavelength) sit closest to the mother and act as maternal
-references. The remaining eight channels (detectors D2 through D5 at both
-wavelengths) are the signals we actually pull the fetal rate from. That gives us
-eight detector signals plus two references, which is where the "8 signals" count
-comes from even though all 10 channels are in use.
 
 The signal is processed one window at a time. Each window is 60 seconds long and
 the window slides forward 30 seconds at a time. Before any of that, every channel
@@ -32,9 +26,7 @@ per detector (D3 is trusted most), a weight per method, and each window's in ban
 SNR, so cleaner channels and stronger methods are more pronounced.
 
 The fused value for each window forms a time series, which then gets smoothed
-twice. A constant velocity Kalman filter tracks the rate and predicts
-forward through any skipped windows so there are no holes. An exponential moving
-average then applies a final smoothing.
+twice. An exponential moving average then applies a final smoothing.
 
 The EMA has a tunable alpha factor. We sweep alpha over the two
 training rounds (PPG1 and PPG2), score each value with a weighted, normalized MAE,
@@ -52,8 +44,7 @@ the estimate.
    the truth, so we can see how scattered one channel and method is on its own.
 2. Stage 2 shows the fusion across all 10 channels, with a line per method plus the
    combined all method line, showing the affects of fusion.
-3. Stage 3 shows the smoothing chain, the fused track followed by the Kalman result
-   and then the EMA result, with a small inset of the alpha sweep that picked the
+3. Stage 3 shows the smoothing chain, the fused track followed by the EMA result, with a small inset of the alpha sweep that picked the
    smoothing factor.
 4. Stage 4 shows the final estimate against the truth for all three datasets, plus a
    bar panel of MAE by stage on the test set so the error visibly drops as each
